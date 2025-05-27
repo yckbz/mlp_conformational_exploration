@@ -27,20 +27,10 @@ class SanityFilters:
         will trigger the calculation.
         """
         try:
-            # --- THE DEFINITIVE FIX ---
-            # By calling .get_forces() here, we trigger the calculator's .calculate() method ONCE.
-            # This computes both energy and forces and caches them in atoms.calc.results.
-            # All subsequent calls to .get_potential_energy() or .get_forces() will be free
-            # and will simply read the cached results.
             atoms.get_forces()
-            # --- END OF FIX ---
         except Exception as e:
-            # If the DP evaluation itself fails for some reason (e.g., unstable structure),
-            # we consider the structure invalid.
-            # print(f"Debug: Calculation failed for a structure. Error: {e}")
             return False
 
-        # Now, run the checks using the cached results.
         if self.config['min_distance_check']['enabled']:
             if not self._check_min_distance(atoms):
                 return False
@@ -71,7 +61,6 @@ class SanityFilters:
         # without relying on the exact return signature of get_distances
         i_indices, j_indices = np.triu_indices(num_atoms, k=1)
         
-        # Now, get the actual distances for these specific pairs
         # This is more efficient than calculating all distances if not needed
         all_distances = atoms.get_all_distances()
         distances = all_distances[i_indices, j_indices]
