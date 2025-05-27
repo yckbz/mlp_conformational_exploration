@@ -1,0 +1,59 @@
+# config.yaml
+
+# --- General Settings ---
+initial_potential: 'graph.pb'
+seed_files:
+  - 'seed/seed1.cif'
+output_file: 'selected_structures.xyz'
+
+# --- Sampling Settings ---
+sampling_mode: 'random_walk' # 'monte_carlo' or 'random_walk'
+num_candidates_per_seed: 20 # Number of candidate structures to generate for each seed
+
+# Monte Carlo (MC) Specifics
+mc_params:
+  temperatures: [1000,1600,2400] # Kelvin. A list of temperatures to run simulations at.
+  max_displacement: 0.1       # Angstrom
+  num_steps: 100            # Number of MC steps per temperature
+
+# Random Walk (RW) Specifics
+rw_params:
+  perturbation_magnitude: 0.5 # Angstrom
+  optimization_fmax: 0.1      # Force tolerance for local energy minimization (eV/A)
+  num_walks: 20             # Number of random walks to perform
+
+# --- Filter Settings ---
+filters:
+  min_distance_check:
+    enabled: true
+    min_dist_matrix:
+      'Au-Au': 2
+
+  max_energy_check:
+    enabled: true
+    # Energy per atom above the relaxed seed energy. (eV)
+    energy_tolerance: 1.0
+  max_force_check:
+    enabled: true
+    # Max force component on any atom (eV/A)
+    max_force_component: 10.0
+
+# --- Selection Settings ---
+selection_method: 'fps' # 'fps' or 'pca_grid'
+total_structures_to_select: 20
+
+# Farthest Point Sampling (FPS) Specifics
+fps_params:
+  distance_metric: 'euclidean' # 'euclidean' or 'cosine'
+
+# SOAP + PCA + Gridding Specifics
+pca_grid_params:
+  n_components: 2 # 2 or 3
+  grid_size: [10, 10]
+
+# --- SOAP Descriptor Settings ---
+soap_params:
+  species: ['Au', 'Ag', 'Cu']
+  r_cut: 5.0  # Renamed from rcut
+  n_max: 8    # Renamed from nmax
+  l_max: 6    # Renamed from lmax
