@@ -3,7 +3,7 @@
 # --- General Settings ---
 initial_potential: 'graph.pb'
 seed_files:
-  - 'seed/seed7.cif'
+  - 'seed/seed1.cif'
   - 'seed/seed2.cif'
 output_file: 'selected_structures.xyz'
 
