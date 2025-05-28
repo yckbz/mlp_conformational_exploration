@@ -7,164 +7,171 @@ from sklearn.metrics.pairwise import euclidean_distances, cosine_distances
 from tqdm import tqdm
 
 
-# In selection.py
-
 def _calculate_soap_descriptors(structures: list, soap_config: dict):
     """
-    Calculates the average SOAP descriptors for a list of structures.
+    Calculates average SOAP descriptors for a list of atomic structures.
+
+    SOAP (Smooth Overlap of Atomic Positions) is a descriptor that characterizes
+    local atomic environments.
     """
     print("Calculating SOAP descriptors for all candidate structures...")
 
-    # --- NEW: Clean the structures before parallel processing ---
-    # The attached calculator contains un-pickle-able objects (thread locks).
-    # We remove it from each structure because dscribe only needs positions/symbols.
+    # Detach ASE calculators from structures before parallel processing with dscribe.
+    # Calculators can contain non-serializable objects (e.g., thread locks)
+    # that prevent pickling for multiprocessing. dscribe only needs positions/symbols.
     for atm in structures:
         atm.calc = None
-    # --- End of Change ---
 
-    # Setup the SOAP descriptor generator from dscribe
+    # Initialize the SOAP descriptor generator from the dscribe library.
     soap_generator = SOAP(
-        species=soap_config['species'],
-        periodic=False,
-        r_cut=soap_config['r_cut'],
-        n_max=soap_config['n_max'],
-        l_max=soap_config['l_max'],
-        average="outer",
-        sparse=False
+        species=soap_config['species'], # List of chemical species in the system.
+        periodic=False,                 # Set to True for periodic systems if applicable.
+        r_cut=soap_config['r_cut'],     # Cutoff radius for atomic environments.
+        n_max=soap_config['n_max'],     # Number of radial basis functions.
+        l_max=soap_config['l_max'],     # Number of angular basis functions.
+        average="outer",                # Type of averaging for global descriptors.
+        sparse=False                    # Whether to produce sparse output.
     )
     
-    # This parallel call will now work correctly.
+    # Create SOAP descriptors for all structures. Uses all available CPU cores (n_jobs=-1).
     descriptors = soap_generator.create(structures, n_jobs=-1)
     print(f"SOAP calculation complete. Descriptor matrix shape: {descriptors.shape}")
     return descriptors
 
 def select_fps(structures: list, n_select: int, fps_params: dict, soap_params: dict):
     """
-    Selects structures using Farthest Point Sampling (FPS). [cite: 3]
+    Selects a diverse subset of structures using Farthest Point Sampling (FPS).
 
-    Args:
-        structures (list): The pool of candidate structures.
-        n_select (int): The total number of structures to select.
-        fps_params (dict): Parameters for FPS, like the distance metric.
-        soap_params (dict): Parameters for SOAP descriptor calculation.
-
-    Returns:
-        list: A list of selected ASE Atoms objects.
+    FPS iteratively selects structures that are farthest from the already selected set
+    in the SOAP descriptor space, maximizing diversity.
     """
     print("Starting Farthest Point Sampling (FPS)...")
+    if not structures:
+        print("Warning: No structures provided for FPS selection. Returning empty list.")
+        return []
     if len(structures) <= n_select:
-        print("Warning: Number of candidates is less than or equal to the number to select. Returning all candidates.")
+        print("Warning: Number of candidates is less than or equal to the number to select. "
+              "Returning all candidates.")
         return structures
 
+    # Calculate SOAP descriptors to represent each structure numerically.
     descriptors = _calculate_soap_descriptors(structures, soap_params)
     n_candidates = descriptors.shape[0]
     
-    # Choose the distance metric
-    metric = fps_params.get('distance_metric', 'euclidean')
-    if metric == 'cosine':
-        distance_matrix_func = cosine_distances
-    else:
-        distance_matrix_func = euclidean_distances
+    # Determine the distance metric for comparing descriptors (e.g., 'euclidean' or 'cosine').
+    metric_name = fps_params.get('distance_metric', 'euclidean')
+    distance_func = cosine_distances if metric_name == 'cosine' else euclidean_distances
         
-    # Start with a random structure [cite: 3]
+    # Initialize FPS by selecting a random structure as the first point.
     selected_indices = [np.random.randint(n_candidates)]
     remaining_indices = list(range(n_candidates))
     remaining_indices.remove(selected_indices[0])
 
-    # Initialize the minimum distance from each remaining point to the selected set
-    # For the first iteration, this is just the distance to the single starting point
-    selected_descs = descriptors[selected_indices]
-    dist_to_set = distance_matrix_func(descriptors[remaining_indices], selected_descs).min(axis=1)
+    # Calculate initial minimum distances from all remaining points to the first selected point.
+    # `dist_to_set[i]` stores the minimum distance of `remaining_indices[i]` to any already selected point.
+    selected_descs = descriptors[selected_indices] # Descriptors of already selected structures
+    dist_to_set = distance_func(descriptors[remaining_indices], selected_descs).min(axis=1)
 
-    # Iteratively select the farthest point [cite: 3]
+    # Iteratively select the farthest points.
     for _ in tqdm(range(1, n_select), desc="FPS Selection"):
-        # Find the point with the maximum minimum distance [cite: 3]
-        farthest_point_idx_in_remaining = np.argmax(dist_to_set)
-        farthest_point_global_idx = remaining_indices.pop(farthest_point_idx_in_remaining)
-        
-        # Add the new point to the selected set [cite: 4]
-        selected_indices.append(farthest_point_global_idx)
-
-        # If we have selected all we need, break
-        if len(selected_indices) == n_select:
+        if not remaining_indices: # Stop if no more points to select
             break
-            
-        # Update distances for the next iteration
-        # We only need to remove the distance entry for the point just selected
-        dist_to_set = np.delete(dist_to_set, farthest_point_idx_in_remaining)
-        
-        # Calculate distance from remaining points to the *newly added* point
-        new_point_desc = descriptors[farthest_point_global_idx].reshape(1, -1)
-        dist_to_new_point = distance_matrix_func(descriptors[remaining_indices], new_point_desc).flatten()
-        
-        # Update the overall minimum distance to the set
-        dist_to_set = np.minimum(dist_to_set, dist_to_new_point)
 
-    selected_structures = [structures[i] for i in selected_indices]
-    print(f"FPS complete. Selected {len(selected_structures)} structures.")
-    return selected_structures
+        # Find the point in the remaining set that is farthest from the already selected set.
+        idx_in_remaining_of_farthest = np.argmax(dist_to_set)
+        global_idx_of_farthest = remaining_indices.pop(idx_in_remaining_of_farthest)
+        
+        selected_indices.append(global_idx_of_farthest)
+
+        if len(selected_indices) == n_select:
+            break # Reached the target number of structures.
+            
+        # Update distances for the next iteration.
+        # Remove the entry for the just-selected point from dist_to_set.
+        dist_to_set = np.delete(dist_to_set, idx_in_remaining_of_farthest)
+        
+        if not remaining_indices: # Check again after pop and delete
+            break
+
+        # Calculate distances from the remaining points to the *newly added* point.
+        newly_selected_desc = descriptors[global_idx_of_farthest].reshape(1, -1)
+        dist_to_newly_selected = distance_func(descriptors[remaining_indices], newly_selected_desc).flatten()
+        
+        # Update the minimum distances to the selected set.
+        dist_to_set = np.minimum(dist_to_set, dist_to_newly_selected)
+
+    # Retrieve the selected ASE Atoms objects based on their indices.
+    selected_structures_fps = [structures[i] for i in selected_indices]
+    print(f"FPS complete. Selected {len(selected_structures_fps)} structures.")
+    return selected_structures_fps
 
 
 def select_pca_grid(structures: list, n_select: int, pca_grid_params: dict, soap_params: dict):
     """
-    Selects structures using a SOAP+PCA gridding strategy.
+    Selects structures using a SOAP descriptor, PCA, and gridding strategy.
 
-    Args:
-        structures (list): The pool of candidate structures.
-        n_select (int): The total number of structures to select (acts as a target).
-        pca_grid_params (dict): Parameters for the PCA gridding method.
-        soap_params (dict): Parameters for SOAP descriptor calculation.
-
-    Returns:
-        list: A list of selected ASE Atoms objects.
+    This method aims to select structures that are representative of different regions
+    in a low-dimensional space defined by Principal Component Analysis (PCA) of SOAP descriptors.
+    The `n_select` parameter acts as a target; the actual number selected depends on
+    the number of non-empty grid cells.
     """
     print("Starting SOAP+PCA+Gridding selection...")
+    if not structures:
+        print("Warning: No structures provided for PCA-Grid selection. Returning empty list.")
+        return []
+        
     descriptors = _calculate_soap_descriptors(structures, soap_params)
 
-    # 1. Perform PCA for dimensionality reduction
-    n_comp = pca_grid_params.get('n_components', 2)
-    pca = PCA(n_components=n_comp)
+    # 1. Perform PCA for dimensionality reduction of SOAP descriptors.
+    n_components = pca_grid_params.get('n_components', 2) # Number of principal components.
+    pca = PCA(n_components=n_components)
     principal_components = pca.fit_transform(descriptors)
-    print(f"PCA complete. Explained variance by {n_comp} components: {np.sum(pca.explained_variance_ratio_):.2%}")
+    print(f"PCA complete. Explained variance by {n_components} components: {np.sum(pca.explained_variance_ratio_):.2%}")
     
-    # 2. Establish the grid
-    grid_size = pca_grid_params['grid_size']
-    if len(grid_size) != n_comp:
+    # 2. Establish a grid in the PCA space.
+    grid_resolution = pca_grid_params['grid_size'] # e.g., [10, 10] for a 10x10 grid in 2D.
+    if len(grid_resolution) != n_components:
         raise ValueError("grid_size must have the same number of dimensions as n_components.")
 
-    # Determine the range for each principal component [cite: 5]
-    pc_min = principal_components.min(axis=0)
-    pc_max = principal_components.max(axis=0)
+    # Determine the data range for each principal component to define grid boundaries.
+    pc_min_values = principal_components.min(axis=0)
+    pc_max_values = principal_components.max(axis=0)
 
-    # Create bins for each dimension
-    grid_bins = [np.linspace(pc_min[i], pc_max[i], grid_size[i] + 1) for i in range(n_comp)]
+    # Create bins (edges of grid cells) for each principal component dimension.
+    grid_bins_per_dim = [np.linspace(pc_min_values[i], pc_max_values[i], grid_resolution[i] + 1) for i in range(n_components)]
     
-    # 3. Assign each structure to a grid cell
-    # A dictionary where keys are grid cell indices (e.g., (1, 5)) and
-    # values are lists of structure indices belonging to that cell.
+    # 3. Assign each structure to a grid cell based on its PCA coordinates.
+    # `grid_map` will store: {grid_cell_tuple: [list_of_structure_indices_in_cell]}
     grid_map = {}
     
-    # Use np.digitize for efficient binning
-    binned_indices = np.zeros_like(principal_components, dtype=int)
-    for i in range(n_comp):
-        # np.digitize is 1-based, subtract 1 for 0-based index
-        binned_indices[:, i] = np.digitize(principal_components[:, i], grid_bins[i]) - 1
-        # Clamp values to be within grid bounds
-        binned_indices[:, i] = np.clip(binned_indices[:, i], 0, grid_size[i] - 1)
+    # Digitize PC coordinates into grid cell indices.
+    binned_pc_indices = np.zeros_like(principal_components, dtype=int)
+    for i in range(n_components):
+        # `np.digitize` returns 1-based indices; convert to 0-based.
+        binned_pc_indices[:, i] = np.digitize(principal_components[:, i], grid_bins_per_dim[i]) - 1
+        # Ensure indices are within grid bounds [0, grid_resolution-1].
+        binned_pc_indices[:, i] = np.clip(binned_pc_indices[:, i], 0, grid_resolution[i] - 1)
 
-    for i, pc_coords in enumerate(binned_indices):
-        cell_tuple = tuple(pc_coords)
-        if cell_tuple not in grid_map:
-            grid_map[cell_tuple] = []
-        grid_map[cell_tuple].append(i)
+    # Populate the grid_map.
+    for struct_idx, pc_coords_binned in enumerate(binned_pc_indices):
+        cell_id_tuple = tuple(pc_coords_binned)
+        if cell_id_tuple not in grid_map:
+            grid_map[cell_id_tuple] = []
+        grid_map[cell_id_tuple].append(struct_idx)
 
-    # 4. Select one structure from each non-empty cell
-    selected_indices = []
-    for cell in grid_map.values():
-        # Randomly select one structure from this grid cell
-        selected_index = np.random.choice(cell)
-        selected_indices.append(selected_index)
+    # 4. Select one structure randomly from each non-empty grid cell.
+    selected_indices_pca_grid = []
+    for cell_content_indices in grid_map.values():
+        if cell_content_indices: # If the cell is not empty
+            selected_index_from_cell = np.random.choice(cell_content_indices)
+            selected_indices_pca_grid.append(selected_index_from_cell)
 
-    selected_structures = [structures[i] for i in selected_indices]
-    print(f"PCA Gridding complete. Selected {len(selected_structures)} structures from {len(grid_map)} non-empty grid cells.")
-    return selected_structures
+    # Note: The actual number of selected structures might be less than `n_select`
+    # if the number of non-empty grid cells is less than `n_select`.
+    # Or it could be more if n_select is very small relative to grid cells.
+    # This method prioritizes coverage over exact count matching `n_select`.
+    
+    selected_structures_pca_grid = [structures[i] for i in selected_indices_pca_grid]
+    print(f"PCA Gridding complete. Selected {len(selected_structures_pca_grid)} structures "
+          f"from {len(grid_map)} non-empty grid cells.")
+    return selected_structures_pca_grid
