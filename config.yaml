@@ -15,7 +15,7 @@ mc_params:
   ensemble: 'NVT'                # 'NVT' or 'NPT'
   pressures: [1.0,100.0]              # External pressure in bar (only for NPT)
   max_volume_change_fraction: 0.1 # Max fractional change in volume per NPT step
-  temperatures: [1000]
+  temperatures: [300, 1000]
   max_displacement: 0.1
   num_steps: 50
   
